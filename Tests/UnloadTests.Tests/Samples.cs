@@ -1,7 +1,7 @@
 ﻿using Frends.Tests.TaskAssemblyUnloading;
 using NUnit.Framework;
 
-namespace UnloadingTestsAndSamples
+namespace UnloadTests.Tests
 {
     [TestFixture]
     public class Samples

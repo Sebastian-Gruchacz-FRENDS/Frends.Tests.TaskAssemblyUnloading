@@ -1,5 +1,6 @@
 ﻿using System.Reflection;
 using System.Runtime.Loader;
+using System.Xml.Linq;
 
 namespace Frends.Tests.TaskAssemblyUnloading;
 
@@ -26,12 +27,16 @@ public sealed class ExecutionBuilder
 
     private static void ExecuteInternal(InvocationSpec spec)
     {
-        var alc = new AssemblyLoadContext("TestContext", isCollectible: true);
+        var alc = new AssemblyLoadContext("TestContext" + Guid.NewGuid().ToString(), isCollectible: true);
         var weakRef = new WeakReference(alc);
+        bool loaded = false;
+        bool executed = false;
 
         try
         {
+            UnloadDiagnostics.Log($"Loading: {spec.AssemblyPath}");
             var asm = alc.LoadFromAssemblyPath(Path.GetFullPath(spec.AssemblyPath));
+            loaded = true;
 
             var type = asm.GetType(spec.TypeName, throwOnError: true)!;
 
@@ -43,18 +48,40 @@ public sealed class ExecutionBuilder
             }
 
             // TODO: test with async / sync combinations, both for test method and Task method
-
+            UnloadDiagnostics.Log($"Invoking: {type.FullName}.{method.Name}");
             var result = method.Invoke(null, args);
 
             if (result is Task task)
             {
                 task.GetAwaiter().GetResult();
             }
+
+            executed = true;
+        }
+        catch (Exception ex)
+        {
+            UnloadDiagnostics.Log($"Execution failed: {ex}");
+            throw;
         }
         finally
         {
-            alc.Unload();
-            ForceUnload(weakRef);
+            if (loaded && executed)
+            {
+                // test unloadability only if assembly was properly located, loaded and Task executed - to not hide other exceptions
+
+                UnloadDiagnostics.Log("Unloading ALC");
+                alc.Unload();
+
+                try
+                {
+                    ForceUnload(weakRef);
+                }
+                catch
+                {
+                    UnloadDiagnostics.DumpAssemblyLoadContext(alc);
+                    throw;
+                }
+            }
         }
     }
 
@@ -64,7 +91,9 @@ public sealed class ExecutionBuilder
         foreach (var pInfo in method.GetParameters())
         {
             var pType = pInfo.ParameterType;
-            object? value = Activator.CreateInstance(pType);
+            object? value = pInfo.ParameterType.IsValueType 
+                ? Activator.CreateInstance(pType)
+                : null;
             parameters.Add(value);
         }
 
@@ -79,12 +108,12 @@ public sealed class ExecutionBuilder
 
         var matchedMethod = (args.Any())
             ? MatchMethodOnParameters(methods, args)
-            : SelectSingleMethod(methods);
+            : SelectSingleMethod(methods, type, methodName);
         
         return matchedMethod ?? throw new MissingMethodException(type.FullName, methodName);
     }
 
-    private static MethodInfo? SelectSingleMethod(MethodInfo[] methods)
+    private static MethodInfo? SelectSingleMethod(MethodInfo[] methods, Type type, string methodName)
     {
         // TODO: perhaps could match one with [settings] or [options] decorations only...
 
@@ -100,7 +129,14 @@ public sealed class ExecutionBuilder
             return methods[0];
         }
 
-        return null;
+        if (methods.Any())
+        {
+            throw new AmbiguousMatchException($"Multiple overloads found for '{methodName}', arguments required.");
+        }
+        else
+        {
+            throw new MissingMethodException(type.FullName, methodName);
+        }
     }
 
     private static MethodInfo? MatchMethodOnParameters(MethodInfo[] methods, object?[] args)
@@ -144,6 +180,8 @@ public sealed class ExecutionBuilder
         }
 
         if (weakRef.IsAlive)
+        {
             throw new InvalidOperationException("AssemblyLoadContext failed to unload.");
+        }
     }
 }
