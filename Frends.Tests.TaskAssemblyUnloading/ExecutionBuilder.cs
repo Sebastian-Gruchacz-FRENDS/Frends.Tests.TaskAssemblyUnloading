@@ -21,42 +21,38 @@ public sealed class ExecutionBuilder
         ExecuteInternal(_spec);
     }
 
-    // TODO: ExecuteAsync overload
-
-    // TODO: ExecuteAsyncWithTimeout overload
-
     private static void ExecuteInternal(InvocationSpec spec)
     {
+        bool loadedAndExecuted = false;
+
+        try
+        {
+            // cannot even keep ref to ALC in order to properly unload it
+            loadedAndExecuted = ExecuteInternalWeak(spec, out var reference);
+            if (loadedAndExecuted && reference != null) 
+            {
+                ForceUnload(reference);
+            }
+        }
+        catch (Exception)
+        {
+            if (!loadedAndExecuted)
+            {
+                throw;
+            }
+        }
+    }
+
+    private static bool ExecuteInternalWeak(InvocationSpec spec, out WeakReference? weakReference)
+    {
         var alc = new AssemblyLoadContext("TestContext" + Guid.NewGuid().ToString(), isCollectible: true);
-        var weakRef = new WeakReference(alc);
+        weakReference = new WeakReference(alc);
         bool loaded = false;
         bool executed = false;
 
         try
         {
-            UnloadDiagnostics.Log($"Loading: {spec.AssemblyPath}");
-            var asm = alc.LoadFromAssemblyPath(Path.GetFullPath(spec.AssemblyPath));
-            loaded = true;
-
-            var type = asm.GetType(spec.TypeName, throwOnError: true)!;
-
-            var method = ResolveMethod(type, spec.MethodName, spec.Arguments);
-            var args = spec.Arguments;
-            if (!args.Any())
-            {
-                args = TryBuildDefaultArguments(method);
-            }
-
-            // TODO: test with async / sync combinations, both for test method and Task method
-            UnloadDiagnostics.Log($"Invoking: {type.FullName}.{method.Name}");
-            var result = method.Invoke(null, args);
-
-            if (result is Task task)
-            {
-                task.GetAwaiter().GetResult();
-            }
-
-            executed = true;
+            FindAndTryMethodExecution(spec, alc, ref loaded, ref executed);
         }
         catch (Exception ex)
         {
@@ -67,22 +63,42 @@ public sealed class ExecutionBuilder
         {
             if (loaded && executed)
             {
-                // test unloadability only if assembly was properly located, loaded and Task executed - to not hide other exceptions
-
-                UnloadDiagnostics.Log("Unloading ALC");
-                alc.Unload();
-
-                try
-                {
-                    ForceUnload(weakRef);
-                }
-                catch
-                {
-                    UnloadDiagnostics.DumpAssemblyLoadContext(alc);
-                    throw;
-                }
+                UnloadDiagnostics.DumpAssemblyLoadContext(alc);
             }
         }
+
+        // test unloadability only if assembly was properly located, loaded and Task executed - to not hide other exceptions
+        return (loaded && executed);
+    }
+
+    private static void FindAndTryMethodExecution(InvocationSpec spec, AssemblyLoadContext alc, ref bool loaded, ref bool executed)
+    {
+        UnloadDiagnostics.Log($"Loading: {spec.AssemblyPath}");
+        var asm = alc.LoadFromAssemblyPath(Path.GetFullPath(spec.AssemblyPath));
+        loaded = true;
+
+        var type = asm.GetType(spec.TypeName, throwOnError: true)!;
+
+        var method = ResolveMethod(type, spec.MethodName, spec.Arguments);
+        var args = spec.Arguments;
+        if (!args.Any())
+        {
+            args = TryBuildDefaultArguments(method);
+        }
+
+        // TODO: test with async / sync combinations, both for test method and Task method
+        UnloadDiagnostics.Log($"Invoking: {type.FullName}.{method.Name}");
+        var result = method.Invoke(null, args);
+
+        if (result is Task task)
+        {
+            task.GetAwaiter().GetResult();
+        }
+
+        executed = true;
+
+        UnloadDiagnostics.Log("Unloading ALC");
+        alc.Unload();
     }
 
     private static object?[] TryBuildDefaultArguments(MethodInfo method)

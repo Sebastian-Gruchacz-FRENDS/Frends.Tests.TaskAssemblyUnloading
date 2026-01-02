@@ -14,9 +14,11 @@ public class ExecutionTests
     [Test]
     public void Executes_Method_With_NoArgs()
     {
-        UnloadTest
+        // Task Methods without args are not allowed
+        Assert.Throws<MissingMethodException>(() =>
+            UnloadTest
             .Invoke(TestAssets.Path, SIMPLE_TARGET, "NoArgs")
-            .Execute();
+            .Execute());
     }
 
     [Test]
@@ -30,6 +32,7 @@ public class ExecutionTests
     [Test]
     public void Executes_With_Default_Arguments()
     {
+        // When not providing arguments - but there is no ambiguous methods - execution with default values will be attempted
         UnloadTest
             .Invoke(TestAssets.Path, SIMPLE_TARGET, "Defaults")
             .Execute();
@@ -59,10 +62,11 @@ public class ExecutionTests
     [Test]
     public void Throws_On_Ambiguous_Method()
     {
+        // When not providing arguments - ambiguity in method calls cannot be resolved (same method name, different parameters)
         Assert.Throws<AmbiguousMatchException>(() =>
             UnloadTest.Invoke(TestAssets.Path, SIMPLE_TARGET, "OneArg").Execute());
     }
-
+    
     [Test]
     public void Throws_When_Method_Throws()
     {
