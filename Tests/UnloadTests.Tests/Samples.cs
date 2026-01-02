@@ -4,6 +4,7 @@ using NUnit.Framework;
 namespace UnloadTests.Tests
 {
     [TestFixture]
+    [Ignore("Just RUN Samples, there is no existing library for them.")]
     public class Samples
     {
         [Test]
