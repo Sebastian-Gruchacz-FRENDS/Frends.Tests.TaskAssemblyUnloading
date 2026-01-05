@@ -1,6 +1,5 @@
 ﻿using System.Reflection;
 using System.Runtime.Loader;
-using System.Xml.Linq;
 
 namespace Frends.Tests.TaskAssemblyUnloading;
 
@@ -169,7 +168,7 @@ public sealed class ExecutionBuilder
                 if (args[i] == null)
                     continue;
 
-                if (!parameters[i].ParameterType.IsInstanceOfType(args[i]))
+                if (!(parameters[i].ParameterType.IsInstanceOfType(args[i])))
                 {
                     match = false;
                     break;

@@ -6,6 +6,7 @@ internal static class TestAssets
 {
     /// <summary>
     /// Path to the test Assembly
+    /// 
     /// </summary>
     /// <remarks>See project XML on how Targets are referenced - ensuring compilation and then file(s) copy</remarks>
     public static string Path =>
