@@ -31,6 +31,26 @@ public class ExecutionTests
     }
 
     [Test]
+    public void ExecutesMethodWithArgs_Using_LongerSyntax()
+    {
+        UnloadTest
+            .From(TestAssets.Path)
+            .Type(SIMPLE_TARGET)
+            .TaskMethod("OneArg")
+            .WithArgs(5)
+            .Execute();
+    }
+
+    [Test]
+    public void ExecutesMethodWithArgs_Using_TypedSyntax()
+    {
+        UnloadTest
+            .FromType(typeof(ComplexTargetGuidTask))
+            .TaskMethod(nameof(ComplexTargetGuidTask.GenerateGuidV3))
+            .Execute();
+    }
+
+    [Test]
     public void Executes_With_Default_Arguments()
     {
         // When not providing arguments - but there is no ambiguous methods - execution with default values will be attempted

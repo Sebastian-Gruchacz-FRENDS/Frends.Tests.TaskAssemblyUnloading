@@ -25,4 +25,10 @@ public static class UnloadTest
     {
         return new ExecutionBuilder(new InvocationSpec(assemblyPath, typeName, methodName, args));
     }
+
+    public static TypeSelector FromType(Type targetClass)
+    {
+        var asmName = targetClass.Assembly.Location;
+        return new TypeSelector(asmName, targetClass.FullName!);
+    }
 }
