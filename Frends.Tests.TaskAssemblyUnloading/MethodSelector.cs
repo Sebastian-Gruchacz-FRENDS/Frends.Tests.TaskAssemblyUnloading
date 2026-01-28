@@ -16,24 +16,28 @@ public sealed class MethodSelector
     /// <summary>
     /// Add Task execution arguments (optional)
     /// </summary>
+    /// <param name="enableSerialization"></param>
     /// <param name="args"></param>
     /// <returns></returns>
-    public ExecutionBuilder WithArgs(params object?[] args) => new(new InvocationSpec(
+    public ExecutionBuilder WithArgs(bool enableSerialization, params object?[] args) => new(new InvocationSpec(
         _assemblyPath,
         _typeName,
         _methodName,
+        enableSerialization,
         args));
 
     /// <summary>
     /// Execute using using default parameters
     /// </summary>
-    public void Execute()
+    /// <remarks>Will create default(T) arguments, usually null ones</remarks>
+    public void ExecuteWithoutSerialization()
     {
         new ExecutionBuilder(
                 new InvocationSpec(
                 _assemblyPath,
                 _typeName,
-                _methodName))
+                _methodName,
+                false))
             .Execute();
     }
 }

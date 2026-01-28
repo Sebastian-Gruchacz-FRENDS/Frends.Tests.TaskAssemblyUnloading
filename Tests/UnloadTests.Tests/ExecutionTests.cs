@@ -37,17 +37,17 @@ public class ExecutionTests
             .From(TestAssets.Path)
             .Type(SIMPLE_TARGET)
             .TaskMethod("OneArg")
-            .WithArgs(5)
+            .WithArgs(false, 5) // no serialization need
             .Execute();
     }
 
     [Test]
-    public void ExecutesMethodWithArgs_Using_TypedSyntax()
+    public void ExecutesMethodWithArgs_UsingTypedSyntax_DoesNotConflictWithUnload()
     {
         UnloadTest
             .FromType(typeof(ComplexTargetGuidTask))
             .TaskMethod(nameof(ComplexTargetGuidTask.GenerateGuidV3))
-            .Execute();
+            .ExecuteWithoutSerialization();
     }
 
     [Test]
@@ -122,17 +122,32 @@ public class ExecutionTests
     [Test]
     public void CompositeTasks_WithEmbeddedParameters_ShouldThrowBecauseOfWrongAssembly()
     {
-        // Nested types will not be matched - ALC is part of the typedef. Have to use one of:
+        // Nested types will not be serialized-deserialized across the ALC boundary - ALC is part of the typedef. Have to use one of:
         //  - primitive types
         //  - shared library types
         //  - test calls without params
+        //  - regular Invoke(), that uses boundary serialization (default)
 
         Assert.Throws<MissingMethodException>(() => UnloadTest
-            .Invoke(TestAssets.Path, COMPOSITE_TARGET, "GenerateGuidV1", new TimeBasedGuidParameters(), new Options(), CancellationToken.None)
+            .InvokeWithoutSerialization(TestAssets.Path, COMPOSITE_TARGET, "GenerateGuidV1", new TimeBasedGuidParameters(), new Options(), CancellationToken.None)
             .Execute()
         );
 
         Assert.Throws<MissingMethodException>(() => UnloadTest
+            .InvokeWithoutSerialization(TestAssets.Path, COMPOSITE_TARGET, "GenerateGuidV3", new NameBasedGuidParameters(), new Options(), CancellationToken.None)
+            .Execute()
+        );
+    }
+
+    [Test]
+    public void CompositeTasks_WithEmbeddedParameters_WithSerializationDisabled_ShouldThrowBecauseOfWrongAssembly()
+    {
+        Assert.DoesNotThrow(() => UnloadTest
+            .Invoke(TestAssets.Path, COMPOSITE_TARGET, "GenerateGuidV1", new TimeBasedGuidParameters(), new Options(), CancellationToken.None)
+            .Execute()
+        );
+
+        Assert.DoesNotThrow(() => UnloadTest
             .Invoke(TestAssets.Path, COMPOSITE_TARGET, "GenerateGuidV3", new NameBasedGuidParameters(), new Options(), CancellationToken.None)
             .Execute()
         );

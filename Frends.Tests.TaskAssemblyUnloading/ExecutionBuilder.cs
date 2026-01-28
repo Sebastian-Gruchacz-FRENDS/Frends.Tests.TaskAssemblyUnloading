@@ -1,5 +1,7 @@
 ﻿using System.Reflection;
 using System.Runtime.Loader;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Frends.Tests.TaskAssemblyUnloading;
 
@@ -78,11 +80,23 @@ public sealed class ExecutionBuilder
 
         var type = asm.GetType(spec.TypeName, throwOnError: true)!;
 
-        var method = ResolveMethod(type, spec.MethodName, spec.Arguments);
+        var method = ResolveMethod(type, spec.MethodName, spec.Arguments, spec.UseSerializationIfNeeded, out var shouldSerialize);
         var args = spec.Arguments;
+
         if (!args.Any())
         {
             args = TryBuildDefaultArguments(method);
+        }
+        else
+        {
+            if (shouldSerialize)
+            {
+                var coreSerializer = typeof(JsonSerializer);
+                var textAssembly = alc.LoadFromAssemblyPath(Path.GetFullPath(coreSerializer.Assembly.Location));
+                var alcSerializer = textAssembly.GetType(coreSerializer.FullName!, true);
+
+                args = SerializeArgumentsThroughAlcBoundary(coreSerializer, alcSerializer!, args, method);
+            }
         }
 
         // TODO: test with async / sync combinations, both for test method and Task method
@@ -100,6 +114,78 @@ public sealed class ExecutionBuilder
         alc.Unload();
     }
 
+    private static object?[] SerializeArgumentsThroughAlcBoundary(Type coreSerializer, Type alcSerializer, object?[] args, MethodInfo method)
+    {
+        var parameters = method.GetParameters();
+        var newArgs = new object?[args.Length];
+
+        // locate serializer methods reflectively
+        var coreSerialize = coreSerializer.GetMethod(nameof(JsonSerializer.Serialize),
+            BindingFlags.Public | BindingFlags.Static, [typeof(object), typeof(Type), typeof(JsonSerializerOptions)]);
+
+        var alcAssembly = alcSerializer.Assembly;
+        var alcContextType = alcAssembly.GetType(typeof(JsonSerializerOptions).FullName!)!;
+        var alcDeserialize = alcSerializer.GetMethod(nameof(JsonSerializer.Deserialize),
+            BindingFlags.Public | BindingFlags.Static, [typeof(string), typeof(Type), alcContextType]);
+
+        //JsonSerializer.Deserialize("dsdd", alcContextType, new JsonSerializerOptions());
+
+        if (coreSerialize == null || alcDeserialize == null)
+            throw new InvalidOperationException("Failed to locate JsonSerializer.Serialize/Deserialize methods via reflection.");
+
+        for (int i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            var paramType = parameters[i].ParameterType;
+
+            if (arg == null)
+            {
+                newArgs[i] = null;
+                continue;
+            }
+
+            // If argument already matches the parameter type (unlikely across ALC boundary) just forward it
+            if (paramType.IsInstanceOfType(arg))
+            {
+                newArgs[i] = arg;
+                continue;
+            }
+
+            // Only attempt serialization when names match (type identity differs because of ALC)
+            if (!paramType.FullName!.Equals(arg.GetType().FullName, StringComparison.Ordinal))
+            {
+                // types differ by name as well; cannot safely transfer across boundary
+                throw new InvalidOperationException($"Cannot marshal argument of type '{arg.GetType().FullName}' to parameter type '{paramType.FullName}'.");
+            }
+
+            try
+            {
+                // Serialize in current (default) context
+                var json = coreSerialize.Invoke(null, [arg, arg.GetType(), null]) as string;
+                if (json == null)
+                {
+                    throw new InvalidOperationException("JsonSerializer.Serialize() returned null.");
+                }
+
+                // Deserialize inside ALC context to parameter type
+                var deserialized = alcDeserialize.Invoke(null, [json, paramType, Activator.CreateInstance(alcContextType)]);
+                newArgs[i] = deserialized;
+            }
+            catch (TargetInvocationException tie)
+            {
+                UnloadDiagnostics.Log($"Serialization/Deserialization failed for parameter {i}: {tie.InnerException ?? tie}");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                UnloadDiagnostics.Log($"Serialization/Deserialization failed for parameter {i}: {ex}");
+                throw;
+            }
+        }
+
+        return newArgs;
+    }
+
     private static object?[] TryBuildDefaultArguments(MethodInfo method)
     {
         var parameters = new List<object?>();
@@ -115,14 +201,16 @@ public sealed class ExecutionBuilder
         return parameters.ToArray();
     }
 
-    private static MethodInfo ResolveMethod(Type type, string methodName, object?[] args)
+    private static MethodInfo ResolveMethod(Type type, string methodName, object?[] args, bool enableSerialization, out bool shouldSerialize)
     {
+        shouldSerialize = false;
+
         var methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
             .Where(m => m.Name == methodName)
             .ToArray();
 
         var matchedMethod = (args.Any())
-            ? MatchMethodOnParameters(methods, args)
+            ? MatchMethodOnParameters(methods, args, enableSerialization, out shouldSerialize)
             : SelectSingleMethod(methods, type, methodName);
         
         return matchedMethod ?? throw new MissingMethodException(type.FullName, methodName);
@@ -154,22 +242,32 @@ public sealed class ExecutionBuilder
         }
     }
 
-    private static MethodInfo? MatchMethodOnParameters(MethodInfo[] methods, object?[] args)
+    private static MethodInfo? MatchMethodOnParameters(MethodInfo[] methods, object?[] arguments, bool serializeBoundaryParameters, out bool shouldSerialize)
     {
+        shouldSerialize = false;
+
         foreach (var m in methods)
         {
             var parameters = m.GetParameters();
-            if (parameters.Length != args.Length)
+            if (parameters.Length != arguments.Length)
                 continue;
 
             bool match = true;
+            
             for (int i = 0; i < parameters.Length; i++)
             {
-                if (args[i] == null)
+                if (arguments[i] == null)
                     continue;
 
-                if (!(parameters[i].ParameterType.IsInstanceOfType(args[i])))
+                if (!(parameters[i].ParameterType.IsInstanceOfType(arguments[i])))
                 {
+                    if (serializeBoundaryParameters &&
+                        parameters[i].ParameterType.FullName!.Equals(arguments[i]?.GetType().FullName))
+                    {
+                        shouldSerialize = true;
+                        continue;
+                    }
+
                     match = false;
                     break;
                 }

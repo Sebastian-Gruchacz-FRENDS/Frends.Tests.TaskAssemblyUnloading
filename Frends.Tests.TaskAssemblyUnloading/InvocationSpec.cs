@@ -2,7 +2,7 @@
 
 internal class InvocationSpec
 {
-    public InvocationSpec(string assemblyPath, string typeName, string methodName, object?[]? args = null)
+    public InvocationSpec(string assemblyPath, string typeName, string methodName, bool useSerializationIfNeeded, object?[]? args = null)
     {
         if (string.IsNullOrWhiteSpace(assemblyPath))
         {
@@ -23,10 +23,12 @@ internal class InvocationSpec
         TypeName = typeName;
         MethodName = methodName;
         Arguments = args ?? [];
+        UseSerializationIfNeeded = useSerializationIfNeeded;
     }
 
-    public string AssemblyPath { get; set; }
-    public string TypeName { get; set; }
-    public string MethodName { get; set; }
-    public object?[] Arguments { get; set; }
+    public bool UseSerializationIfNeeded { get; private set; }
+    public string AssemblyPath { get; private set; }
+    public string TypeName { get; private set; }
+    public string MethodName { get; private set; }
+    public object?[] Arguments { get; private set; }
 }

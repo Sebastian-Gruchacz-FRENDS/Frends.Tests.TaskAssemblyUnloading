@@ -14,7 +14,7 @@ namespace UnloadTests.Tests
                 .From("MyPlugin.dll")
                 .Type("My.Namespace.Worker")
                 .TaskMethod("Run")
-                .WithArgs(42, "abc")
+                .WithArgs(false, 42, "abc")
                 .Execute();
         }
 
@@ -25,7 +25,7 @@ namespace UnloadTests.Tests
                 .From("MyPlugin.dll")
                 .Type("My.Namespace.Worker")
                 .TaskMethod("Run")
-                .Execute();
+                .ExecuteWithoutSerialization();
         }
 
         [Test]

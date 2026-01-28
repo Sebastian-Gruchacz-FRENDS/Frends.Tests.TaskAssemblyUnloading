@@ -23,7 +23,16 @@ public static class UnloadTest
         string methodName,
         params object?[] args)
     {
-        return new ExecutionBuilder(new InvocationSpec(assemblyPath, typeName, methodName, args));
+        return new ExecutionBuilder(new InvocationSpec(assemblyPath, typeName, methodName, true, args));
+    }
+
+    public static ExecutionBuilder InvokeWithoutSerialization(
+        string assemblyPath,
+        string typeName,
+        string methodName,
+        params object?[] args)
+    {
+        return new ExecutionBuilder(new InvocationSpec(assemblyPath, typeName, methodName, false, args));
     }
 
     public static TypeSelector FromType(Type targetClass)
