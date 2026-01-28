@@ -8,7 +8,7 @@ namespace UnloadTests.Tests
     public class Samples
     {
         [Test]
-        public void LongSyntax()
+        public void LongSyntaxWithSystemParams()
         {
             UnloadTest
                 .From("MyPlugin.dll")
@@ -37,10 +37,18 @@ namespace UnloadTests.Tests
         }
 
         [Test]
-        public void ShortSyntaxNoParams()
+        public void ShortSyntaxWithDefaultParams()
         {
             UnloadTest
                 .Invoke("MyPlugin.dll", "My.Namespace.Worker", "Run")
+                .Execute();
+        }
+
+        [Test]
+        public void ShortSyntaxWithEmbeddedParams()
+        {
+            UnloadTest
+                .Invoke("MyPlugin.dll", "My.Namespace.TaskWorker", "RunWithOptions", null) // new My.Namespace.TaskOptions()
                 .Execute();
         }
     }
