@@ -128,8 +128,6 @@ public sealed class ExecutionBuilder
         var alcDeserialize = alcSerializer.GetMethod(nameof(JsonSerializer.Deserialize),
             BindingFlags.Public | BindingFlags.Static, [typeof(string), typeof(Type), alcContextType]);
 
-        //JsonSerializer.Deserialize("dsdd", alcContextType, new JsonSerializerOptions());
-
         if (coreSerialize == null || alcDeserialize == null)
             throw new InvalidOperationException("Failed to locate JsonSerializer.Serialize/Deserialize methods via reflection.");
 
@@ -161,7 +159,7 @@ public sealed class ExecutionBuilder
             try
             {
                 // Serialize in current (default) context
-                var json = coreSerialize.Invoke(null, [arg, arg.GetType(), null]) as string;
+                var json = coreSerialize.Invoke(null, [arg, arg.GetType(), new JsonSerializerOptions{UnknownTypeHandling = JsonUnknownTypeHandling.JsonNode} ]) as string;
                 if (json == null)
                 {
                     throw new InvalidOperationException("JsonSerializer.Serialize() returned null.");

@@ -7,17 +7,18 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="FluentAssertions" Version="8.8.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
     <PackageReference Include="NUnit" Version="4.4.0" />
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\Frends.Test.TaskInjection\Frends.Test.TaskInjection.csproj" />
     <ProjectReference Include="..\..\Frends.Tests.TaskAssemblyUnloading\Frends.Tests.TaskAssemblyUnloading.csproj" />
   </ItemGroup>
 
 	<ItemGroup>
-		<ProjectReference Include="..\UnloadTests.Targets\UnloadTests.Targets.csproj"
-		                  ReferenceOutputAssembly="true" />
+		<ProjectReference Include="..\UnloadTests.Targets\UnloadTests.Targets.csproj" ReferenceOutputAssembly="true" />
 	</ItemGroup>
 	<ItemGroup>
 		<None Update="..\UnloadTests.Targets\bin\$(Configuration)\net8.0\UnloadTests.Targets.dll">
