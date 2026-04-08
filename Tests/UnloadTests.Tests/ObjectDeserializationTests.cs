@@ -23,7 +23,7 @@ namespace UnloadTests.Tests
 
         public ObjectDeserializationTests()
         {
-            _options.Converters.Add(new AlcObjectConverter());
+            _options.Converters.Add(new AlcObjectConverter<object>());
         }
 
         class TestRecordSimple

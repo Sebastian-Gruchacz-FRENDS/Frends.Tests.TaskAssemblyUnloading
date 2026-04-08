@@ -120,7 +120,7 @@ public class ExecutionTests
     }
 
     [Test]
-    public void CompositeTasks_WithEmbeddedParameters_ShouldThrowBecauseOfWrongAssembly()
+    public void CompositeTasks_WithEmbeddedParameters_WithSerializationDisabled_ShouldThrowBecauseOfWrongAssembly()
     {
         // Nested types will not be serialized-deserialized across the ALC boundary - ALC is part of the typedef. Have to use one of:
         //  - primitive types
@@ -140,15 +140,25 @@ public class ExecutionTests
     }
 
     [Test]
-    public void CompositeTasks_WithEmbeddedParameters_WithSerializationDisabled_ShouldThrowBecauseOfWrongAssembly()
+    public void CompositeTasks_WithEmbeddedParameters_ShouldNotThrowBecauseOfWrongAssembly()
     {
         Assert.DoesNotThrow(() => UnloadTest
-            .Invoke(TestAssets.Path, COMPOSITE_TARGET, "GenerateGuidV1", new TimeBasedGuidParameters(), new Options(), CancellationToken.None)
+            .Invoke(TestAssets.Path, COMPOSITE_TARGET, "GenerateGuidV1",
+                new TimeBasedGuidParameters
+                {
+                    CustomTimestamp = DateTime.UtcNow,
+                    UseMacAddress = true
+                }, 
+                new Options{Format = Format.N}, CancellationToken.None)
             .Execute()
         );
 
         Assert.DoesNotThrow(() => UnloadTest
-            .Invoke(TestAssets.Path, COMPOSITE_TARGET, "GenerateGuidV3", new NameBasedGuidParameters(), new Options(), CancellationToken.None)
+            .Invoke(TestAssets.Path, COMPOSITE_TARGET, "GenerateGuidV3",
+                new NameBasedGuidParameters
+                {
+                    NamespaceGuid = Guid.NewGuid().ToString()
+                }, new Options{Format = Format.P}, CancellationToken.None)
             .Execute()
         );
     }

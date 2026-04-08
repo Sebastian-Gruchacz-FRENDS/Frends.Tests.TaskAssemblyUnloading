@@ -3,13 +3,13 @@ using System.Text.Json.Serialization;
 
 namespace Frends.Test.TaskInjection
 {
-    public sealed class AlcObjectConverter : JsonConverter<object>
+    public sealed class AlcObjectConverter<T> : JsonConverter<T> where T : class
     {
-        public override object? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         {
             if (reader.TokenType != JsonTokenType.StartObject)
             {
-                return ReadPrimitive(typeToConvert, ref reader);
+                return ReadPrimitive(typeToConvert, ref reader) as T;
             }
 
             using var doc = JsonDocument.ParseValue(ref reader);
@@ -17,17 +17,17 @@ namespace Frends.Test.TaskInjection
 
             if (!root.TryGetProperty("$t", out var typeProp))
             {
-                return root;
+                return Activator.CreateInstance<T>();
             }
 
             var typeName = typeProp.GetString();
             var type = Type.GetType(typeName!, throwOnError: true)!;
 
             var value = root.GetProperty("$v");
-            return value.Deserialize(type, options);
+            return value.Deserialize(type, options) as T;
         }
 
-        public override void Write(Utf8JsonWriter writer, object value, JsonSerializerOptions options)
+        public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
         {
             var type = value.GetType();
 

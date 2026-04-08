@@ -12,4 +12,8 @@
     <PackageReference Include="NUnit" Version="4.4.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\Frends.Test.TaskInjection\Frends.Test.TaskInjection.csproj" />
+  </ItemGroup>
+
 </Project>

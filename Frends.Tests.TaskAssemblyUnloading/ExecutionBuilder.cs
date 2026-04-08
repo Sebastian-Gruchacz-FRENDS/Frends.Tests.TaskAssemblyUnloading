@@ -2,6 +2,7 @@
 using System.Runtime.Loader;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Frends.Test.TaskInjection;
 
 namespace Frends.Tests.TaskAssemblyUnloading;
 
@@ -91,11 +92,7 @@ public sealed class ExecutionBuilder
         {
             if (shouldSerialize)
             {
-                var coreSerializer = typeof(JsonSerializer);
-                var textAssembly = alc.LoadFromAssemblyPath(Path.GetFullPath(coreSerializer.Assembly.Location));
-                var alcSerializer = textAssembly.GetType(coreSerializer.FullName!, true);
-
-                args = SerializeArgumentsThroughAlcBoundary(coreSerializer, alcSerializer!, args, method);
+                args = SerializeArgumentsThroughAlcBoundary(alc, args, method);
             }
         }
 
@@ -114,22 +111,17 @@ public sealed class ExecutionBuilder
         alc.Unload();
     }
 
-    private static object?[] SerializeArgumentsThroughAlcBoundary(Type coreSerializer, Type alcSerializer, object?[] args, MethodInfo method)
+    private static object?[] SerializeArgumentsThroughAlcBoundary(AssemblyLoadContext alcContext, object?[] args, MethodInfo method)
     {
         var parameters = method.GetParameters();
         var newArgs = new object?[args.Length];
 
-        // locate serializer methods reflectively
-        var coreSerialize = coreSerializer.GetMethod(nameof(JsonSerializer.Serialize),
-            BindingFlags.Public | BindingFlags.Static, [typeof(object), typeof(Type), typeof(JsonSerializerOptions)]);
-
-        var alcAssembly = alcSerializer.Assembly;
-        var alcContextType = alcAssembly.GetType(typeof(JsonSerializerOptions).FullName!)!;
-        var alcDeserialize = alcSerializer.GetMethod(nameof(JsonSerializer.Deserialize),
-            BindingFlags.Public | BindingFlags.Static, [typeof(string), typeof(Type), alcContextType]);
-
-        if (coreSerialize == null || alcDeserialize == null)
-            throw new InvalidOperationException("Failed to locate JsonSerializer.Serialize/Deserialize methods via reflection.");
+        
+        //var alcDeserializeMethod = 
+        //var alcAssembly = alcSerializer.Assembly;
+        //var alcContextType = alcAssembly.GetType(typeof(JsonSerializerOptions).FullName!)!;
+        //var alcDeserialize = alcSerializer.GetMethod(nameof(JsonSerializer.Deserialize),
+        //    BindingFlags.Public | BindingFlags.Static, [typeof(string), typeof(Type), alcContextType]);
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -158,15 +150,21 @@ public sealed class ExecutionBuilder
 
             try
             {
+                var coreSerializer = CrossAlcHelper.GetSerialization(paramType);
+                var (alcDeserializer, deserializationMethod) = CrossAlcHelper.GetDeserialization(alcContext, paramType);
+
+                if (coreSerializer == null || alcDeserializer == null)
+                    throw new InvalidOperationException("Failed to locate CrossAlcHelper.Serialize/Deserialize objects via reflection.");
+
                 // Serialize in current (default) context
-                var json = coreSerialize.Invoke(null, [arg, arg.GetType(), new JsonSerializerOptions{UnknownTypeHandling = JsonUnknownTypeHandling.JsonNode} ]) as string;
+                var json = coreSerializer.SerializeObject(arg) as string;
                 if (json == null)
                 {
                     throw new InvalidOperationException("JsonSerializer.Serialize() returned null.");
                 }
 
                 // Deserialize inside ALC context to parameter type
-                var deserialized = alcDeserialize.Invoke(null, [json, paramType, Activator.CreateInstance(alcContextType)]);
+                var deserialized = deserializationMethod.Invoke(alcDeserializer, [json, paramType]);
                 newArgs[i] = deserialized;
             }
             catch (TargetInvocationException tie)
