@@ -1,7 +1,6 @@
 ﻿using System.Reflection;
 using System.Runtime.Loader;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Frends.Test.TaskInjection;
 
 namespace Frends.Tests.TaskAssemblyUnloading;
@@ -116,12 +115,16 @@ public sealed class ExecutionBuilder
         var parameters = method.GetParameters();
         var newArgs = new object?[args.Length];
 
+        // Use JSON serialization with runtime type preservation for collections
+        var jsonOptions = new JsonSerializerOptions
+        {
+            IncludeFields = true,
+            PropertyNameCaseInsensitive = true,
+            WriteIndented = false
+        };
         
-        //var alcDeserializeMethod = 
-        //var alcAssembly = alcSerializer.Assembly;
-        //var alcContextType = alcAssembly.GetType(typeof(JsonSerializerOptions).FullName!)!;
-        //var alcDeserialize = alcSerializer.GetMethod(nameof(JsonSerializer.Deserialize),
-        //    BindingFlags.Public | BindingFlags.Static, [typeof(string), typeof(Type), alcContextType]);
+        // Add converter factory that handles polymorphic collections
+        jsonOptions.Converters.Add(new RuntimeTypePreservingConverterFactory());
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -134,7 +137,7 @@ public sealed class ExecutionBuilder
                 continue;
             }
 
-            // If argument already matches the parameter type (unlikely across ALC boundary) just forward it
+            // If argument already matches the parameter type (same ALC or framework type), just forward it
             if (paramType.IsInstanceOfType(arg))
             {
                 newArgs[i] = arg;
@@ -150,21 +153,46 @@ public sealed class ExecutionBuilder
 
             try
             {
-                var coreSerializer = CrossAlcHelper.GetSerialization(paramType);
-                var (alcDeserializer, deserializationMethod) = CrossAlcHelper.GetDeserialization(alcContext, paramType);
+                // Serialize in current (default) context using JSON with runtime type preservation
+                var json = JsonSerializer.Serialize(arg, arg.GetType(), jsonOptions);
+                UnloadDiagnostics.Log($"Serialized parameter {i} ({arg.GetType().Name}): {json}");
 
-                if (coreSerializer == null || alcDeserializer == null)
-                    throw new InvalidOperationException("Failed to locate CrossAlcHelper.Serialize/Deserialize objects via reflection.");
-
-                // Serialize in current (default) context
-                var json = coreSerializer.SerializeObject(arg) as string;
-                if (json == null)
-                {
-                    throw new InvalidOperationException("JsonSerializer.Serialize() returned null.");
-                }
-
-                // Deserialize inside ALC context to parameter type
-                var deserialized = deserializationMethod.Invoke(alcDeserializer, [json, paramType]);
+                // Resolve the target type in the ALC, handling generics
+                var alcParamType = ResolveTypeInAlc(alcContext, paramType);
+                
+                // Deserialize inside ALC context using the ALC's type
+                // We use reflection to call JsonSerializer.Deserialize from the ALC's System.Text.Json
+                var jsonSerializerAssembly = LoadTypeAssemblyIntoAlc(alcContext, typeof(JsonSerializer));
+                var alcJsonSerializer = jsonSerializerAssembly.GetType(typeof(JsonSerializer).FullName!)!;
+                var alcJsonOptionsType = jsonSerializerAssembly.GetType(typeof(JsonSerializerOptions).FullName!)!;
+                
+                // Create JsonSerializerOptions in the ALC with converter factory
+                var alcOptions = Activator.CreateInstance(alcJsonOptionsType)!;
+                alcJsonOptionsType.GetProperty("IncludeFields")!.SetValue(alcOptions, true);
+                alcJsonOptionsType.GetProperty("PropertyNameCaseInsensitive")!.SetValue(alcOptions, true);
+                
+                // Load and add the RuntimeTypePreservingConverterFactory in the ALC
+                var alcConverterFactoryType = LoadTypeAssemblyIntoAlc(alcContext, typeof(RuntimeTypePreservingConverterFactory))
+                    .GetType(typeof(RuntimeTypePreservingConverterFactory).FullName!)!;
+                var alcConverterFactory = Activator.CreateInstance(alcConverterFactoryType);
+                
+                // Get the Converters collection and add our converter factory
+                var convertersProperty = alcJsonOptionsType.GetProperty("Converters")!;
+                var converters = convertersProperty.GetValue(alcOptions)!;
+                var addMethod = converters.GetType().GetMethod("Add")!;
+                addMethod.Invoke(converters, [alcConverterFactory]);
+                
+                // Find and invoke Deserialize<T>(string, JsonSerializerOptions)
+                var deserializeMethod = alcJsonSerializer.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                    .First(m => m.Name == "Deserialize" && 
+                               m.IsGenericMethodDefinition && 
+                               m.GetParameters().Length == 2 &&
+                               m.GetParameters()[0].ParameterType == typeof(string) &&
+                               m.GetParameters()[1].ParameterType.Name == "JsonSerializerOptions");
+                               
+                var genericDeserialize = deserializeMethod.MakeGenericMethod(alcParamType);
+                var deserialized = genericDeserialize.Invoke(null, [json, alcOptions]);
+                
                 newArgs[i] = deserialized;
             }
             catch (TargetInvocationException tie)
@@ -180,6 +208,83 @@ public sealed class ExecutionBuilder
         }
 
         return newArgs;
+    }
+
+    private static Type ResolveTypeInAlc(AssemblyLoadContext alcContext, Type type)
+    {
+        // Handle generic types (e.g., List<Animal>)
+        if (type.IsGenericType)
+        {
+            var genericTypeDef = type.GetGenericTypeDefinition();
+            var genericArgs = type.GetGenericArguments();
+            
+            // Resolve each generic argument in the ALC
+            var alcGenericArgs = new Type[genericArgs.Length];
+            for (int i = 0; i < genericArgs.Length; i++)
+            {
+                alcGenericArgs[i] = ResolveTypeInAlc(alcContext, genericArgs[i]);
+            }
+            
+            // Reconstruct the generic type with ALC types
+            // For framework generic types (List<T>, Dictionary<K,V>), use the default context definition
+            if (IsFrameworkAssembly(genericTypeDef.Assembly))
+            {
+                return genericTypeDef.MakeGenericType(alcGenericArgs);
+            }
+            else
+            {
+                // For custom generic types, load the definition into ALC too
+                var alcGenericTypeDef = ResolveNonGenericTypeInAlc(alcContext, genericTypeDef);
+                return alcGenericTypeDef.MakeGenericType(alcGenericArgs);
+            }
+        }
+        
+        // Handle non-generic types
+        return ResolveNonGenericTypeInAlc(alcContext, type);
+    }
+
+    private static Type ResolveNonGenericTypeInAlc(AssemblyLoadContext alcContext, Type type)
+    {
+        var alcParamAssembly = LoadTypeAssemblyIntoAlc(alcContext, type);
+        return alcParamAssembly.GetType(type.FullName!)!;
+    }
+
+    private static Assembly LoadTypeAssemblyIntoAlc(AssemblyLoadContext alc, Type type)
+    {
+        var asm = type.Assembly;
+        
+        // Check if already loaded in the ALC
+        var existingAsm = alc.Assemblies.FirstOrDefault(a => a.GetName().Name == asm.GetName().Name);
+        if (existingAsm != null)
+        {
+            return existingAsm;
+        }
+
+        // Framework assemblies are shared and don't need to be loaded into the ALC
+        if (IsFrameworkAssembly(asm))
+        {
+            return asm;
+        }
+
+        // Load user assembly into ALC
+        return alc.LoadFromAssemblyPath(asm.Location);
+    }
+
+    private static bool IsFrameworkAssembly(Assembly assembly)
+    {
+        var assemblyName = assembly.FullName ?? string.Empty;
+        var name = assemblyName.Split(',')[0].Trim();
+        
+        // Core framework assemblies
+        if (name is "System.Private.CoreLib" or "mscorlib" or "netstandard" or "System.Runtime" or "System")
+        {
+            return true;
+        }
+
+        // Common framework prefixes
+        return name.StartsWith("System.") || 
+               name.StartsWith("Microsoft.") ||
+               name.StartsWith("Mono.");
     }
 
     private static object?[] TryBuildDefaultArguments(MethodInfo method)
