@@ -4,166 +4,233 @@ using System.Runtime.Loader;
 namespace Frends.Tests.TaskAssemblyUnloading;
 
 /// <summary>
-/// Helper for executing test logic directly in an isolated ALC without serialization.
-/// This eliminates cross-ALC serialization issues by running everything in the same context.
+/// Alternative test execution API that provides cleaner syntax for ALC testing.
 /// 
-/// Usage Pattern 1 - Direct execution with result:
-/// <code>
-/// [Test]
-/// public void MyTest()
-/// {
-///     var result = AlcTestRunner
-///         .InAssembly("path/to/assembly.dll")
-///         .Execute(() =>
-///         {
-///             var obj = new ComplexObject { Id = 42 };
-///             var result = ExternalTask.Method(obj);
-///             return result.Property; // Return simple type for assertion
-///         });
-///     
-///     Assert.That(result, Is.EqualTo(expected));
-/// }
-/// </code>
+/// **IMPORTANT LIMITATION**: Due to how .NET ALCs work, true isolation requires reflection.
+/// Delegates capture types from the calling context, so this approach is primarily for cleaner API.
+/// For true isolation, use the reflection-based UnloadTest.Invoke() approach.
 /// 
-/// Usage Pattern 2 - Action without result:
-/// <code>
-/// [Test]
-/// public void MyTest()
-/// {
-///     AlcTestRunner
-///         .InAssembly("path/to/assembly.dll")
-///         .Execute(() =>
-///         {
-///             var obj = new ComplexObject { Id = 42 };
-///             ExternalTask.Method(obj);
-///             // Throws exception if fails
-///         });
-/// }
-/// </code>
+/// This API is useful when:
+/// - You want cleaner syntax
+/// - You're OK with test code running in default ALC
+/// - You just need the target assembly loaded for reference
 /// 
-/// Benefits:
-/// - No serialization needed
-/// - Direct object references
-/// - Simpler than current approach
-/// - Still verifies unloadability
-/// 
-/// Limitations:
-/// - Test logic must be in delegate
-/// - Can only return primitive types or serializable results
-/// - Complex assertions need to be inside the delegate
+/// For true isolation where test code runs in the ALC, you need:
+/// - Test code in separate assembly
+/// - Reflection-based invocation
+/// - Serialization for parameters
 /// </summary>
 public static class AlcTestRunner
 {
     /// <summary>
-    /// Start building an ALC test execution for the specified assembly.
+    /// Loads assembly into ALC and executes action.
+    /// NOTE: The action itself runs in default ALC, only the loaded assembly is in the ALC.
+    /// This is useful for accessing types from the loaded assembly.
     /// </summary>
-    public static AlcExecutionBuilder InAssembly(string assemblyPath)
+    public static void WithAssembly(string assemblyPath, Action testAction)
     {
-        return new AlcExecutionBuilder(assemblyPath);
+        var alcName = $"TestALC_{Guid.NewGuid()}";
+        var alc = new AssemblyLoadContext(alcName, isCollectible: true);
+        var alcWeakRef = new WeakReference(alc);
+
+        try
+        {
+            UnloadDiagnostics.Log($"[AlcTestRunner] Creating ALC: {alcName}");
+
+            // Load target assembly
+            var fullPath = Path.GetFullPath(assemblyPath);
+            var targetAssembly = alc.LoadFromAssemblyPath(fullPath);
+            UnloadDiagnostics.Log($"[AlcTestRunner] Loaded assembly: {targetAssembly.FullName}");
+
+            // Execute the test action
+            // NOTE: This runs in the default ALC, but can reference types from the loaded assembly
+            testAction();
+
+            UnloadDiagnostics.Log($"[AlcTestRunner] Test action executed successfully");
+        }
+        catch (Exception ex)
+        {
+            UnloadDiagnostics.Log($"[AlcTestRunner] Test action failed: {ex.Message}");
+            throw;
+        }
+        finally
+        {
+            // Unload the ALC
+            UnloadDiagnostics.Log($"[AlcTestRunner] Unloading ALC: {alcName}");
+            alc?.Unload();
+
+            // Verify unload
+            for (int i = 0; i < 10 && alcWeakRef.IsAlive; i++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+            }
+
+            if (alcWeakRef.IsAlive)
+            {
+                UnloadDiagnostics.Log($"[AlcTestRunner] WARNING: ALC did not unload!");
+                throw new InvalidOperationException("AssemblyLoadContext failed to unload");
+            }
+            else
+            {
+                UnloadDiagnostics.Log($"[AlcTestRunner] ALC unloaded successfully");
+            }
+        }
     }
 
-    public class AlcExecutionBuilder
+    /// <summary>
+    /// Executes a method via reflection in the isolated ALC.
+    /// This is similar to UnloadTest.Invoke() but with simpler syntax for common cases.
+    /// </summary>
+    public static TResult InvokeInAlc<TResult>(
+        string assemblyPath,
+        string typeName,
+        string methodName,
+        params object?[] args)
     {
-        private readonly string _assemblyPath;
-        private readonly List<string> _additionalAssemblies = new();
+        var alcName = $"TestALC_{Guid.NewGuid()}";
+        var alc = new AssemblyLoadContext(alcName, isCollectible: true);
+        var alcWeakRef = new WeakReference(alc);
 
-        internal AlcExecutionBuilder(string assemblyPath)
+        try
         {
-            _assemblyPath = assemblyPath;
-        }
+            UnloadDiagnostics.Log($"[AlcTestRunner] Creating ALC for invocation: {alcName}");
 
-        /// <summary>
-        /// Load additional assemblies into the ALC (optional).
-        /// </summary>
-        public AlcExecutionBuilder WithAssembly(string additionalAssemblyPath)
-        {
-            _additionalAssemblies.Add(additionalAssemblyPath);
-            return this;
-        }
-
-        /// <summary>
-        /// Execute an action in the isolated ALC. Throws if the action throws.
-        /// </summary>
-        public void Execute(Action testAction)
-        {
-            ExecuteInternal(() =>
+            // Load assembly
+            var fullPath = Path.GetFullPath(assemblyPath);
+            var assembly = alc.LoadFromAssemblyPath(fullPath);
+            
+            // Get type and method
+            var type = assembly.GetType(typeName, throwOnError: true)!;
+            var method = type.GetMethod(methodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+            
+            if (method == null)
             {
-                testAction();
-                return 0; // Dummy return value
-            });
-        }
-
-        /// <summary>
-        /// Execute a function in the isolated ALC and return the result.
-        /// Result type must be serializable or a primitive type.
-        /// </summary>
-        public T Execute<T>(Func<T> testFunc)
-        {
-            return ExecuteInternal(testFunc);
-        }
-
-        private T ExecuteInternal<T>(Func<T> testFunc)
-        {
-            var alcName = $"TestALC_{Guid.NewGuid()}";
-            var alc = new AssemblyLoadContext(alcName, isCollectible: true);
-            var alcWeakRef = new WeakReference(alc);
-
-            try
-            {
-                UnloadDiagnostics.Log($"[AlcTestRunner] Creating ALC: {alcName}");
-
-                // Load target assembly
-                var fullPath = Path.GetFullPath(_assemblyPath);
-                var targetAssembly = alc.LoadFromAssemblyPath(fullPath);
-                UnloadDiagnostics.Log($"[AlcTestRunner] Loaded assembly: {targetAssembly.FullName}");
-
-                // Load additional assemblies
-                foreach (var additionalPath in _additionalAssemblies)
-                {
-                    var additionalFullPath = Path.GetFullPath(additionalPath);
-                    var additionalAssembly = alc.LoadFromAssemblyPath(additionalFullPath);
-                    UnloadDiagnostics.Log($"[AlcTestRunner] Loaded additional assembly: {additionalAssembly.FullName}");
-                }
-
-                // Execute the test function
-                // NOTE: The delegate captures references from the calling context,
-                // but will use types loaded in the ALC when instantiating new objects
-                var result = testFunc();
-
-                UnloadDiagnostics.Log($"[AlcTestRunner] Test function executed successfully");
-
-                return result;
+                throw new MissingMethodException($"Method '{methodName}' not found on type '{typeName}'");
             }
-            catch (Exception ex)
+
+            // Invoke
+            var result = method.Invoke(null, args);
+            
+            UnloadDiagnostics.Log($"[AlcTestRunner] Method invoked successfully");
+
+            return (TResult)result!;
+        }
+        finally
+        {
+            // Unload
+            alc?.Unload();
+            
+            for (int i = 0; i < 10 && alcWeakRef.IsAlive; i++)
             {
-                UnloadDiagnostics.Log($"[AlcTestRunner] Test function failed: {ex.Message}");
-                throw;
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
             }
-            finally
+
+            if (alcWeakRef.IsAlive)
             {
-                // Unload the ALC
-                UnloadDiagnostics.Log($"[AlcTestRunner] Unloading ALC: {alcName}");
-                alc?.Unload();
-
-                // Verify unload
-                for (int i = 0; i < 10 && alcWeakRef.IsAlive; i++)
-                {
-                    GC.Collect();
-                    GC.WaitForPendingFinalizers();
-                    GC.Collect();
-                }
-
-                if (alcWeakRef.IsAlive)
-                {
-                    UnloadDiagnostics.Log($"[AlcTestRunner] WARNING: ALC did not unload!");
-                    throw new InvalidOperationException("AssemblyLoadContext failed to unload");
-                }
-                else
-                {
-                    UnloadDiagnostics.Log($"[AlcTestRunner] ALC unloaded successfully");
-                }
+                throw new InvalidOperationException("AssemblyLoadContext failed to unload");
             }
         }
     }
 }
+
+/// <summary>
+/// Provides documentation and examples for different ALC testing approaches.
+/// </summary>
+public static class AlcTestingGuide
+{
+    /*
+     * APPROACH 1: Current UnloadTest.Invoke() - Reflection with Serialization
+     * =========================================================================
+     * 
+     * [Test]
+     * public void TestWithSerialization()
+     * {
+     *     var input = new MyDto { Id = 42 };
+     *     
+     *     UnloadTest
+     *         .Invoke(assemblyPath, "MyTask", "Process", input)
+     *         .Execute();
+     * }
+     * 
+     * Pros:
+     * - True isolation - everything runs in ALC
+     * - Automatically serializes parameters
+     * - Tests unloadability
+     * 
+     * Cons:
+     * - Requires serialization for complex types
+     * - Polymorphic types need special handling
+     * - Cannot directly debug into task code
+     * 
+     * 
+     * APPROACH 2: AlcTestRunner.WithAssembly() - Reference Types
+     * ============================================================
+     * 
+     * [Test]
+     * public void TestWithTypeReference()
+     * {
+     *     AlcTestRunner.WithAssembly(assemblyPath, () =>
+     *     {
+     *         // Can reference types from loaded assembly
+     *         // But code runs in default ALC
+     *         var result = SomeStaticMethod();
+     *         Assert.That(result, Is.EqualTo(expected));
+     *     });
+     * }
+     * 
+     * Pros:
+     * - Cleaner syntax for simple cases
+     * - Can use complex types without serialization
+     * - Easy to debug
+     * 
+     * Cons:
+     * - Code doesn't actually run in ALC
+     * - Doesn't test true isolation
+     * - Type mixing between ALCs possible
+     * 
+     * 
+     * APPROACH 3: Direct Type Usage (No Isolation)
+     * =============================================
+     * 
+     * [Test]
+     * public void TestDirect()
+     * {
+     *     // Just reference the task project normally
+     *     var input = new MyDto { Id = 42 };
+     *     var result = MyTask.Process(input);
+     *     Assert.That(result.Success, Is.True);
+     * }
+     * 
+     * Pros:
+     * - Simplest to write
+     * - Easy to debug
+     * - No serialization needed
+     * 
+     * Cons:
+     * - Doesn't test unloadability
+     * - Doesn't test isolation
+     * - Not suitable for plugin scenarios
+     * 
+     * 
+     * RECOMMENDATION
+     * ==============
+     * 
+     * Use APPROACH 1 (UnloadTest.Invoke with serialization) when:
+     * - Testing plugin/task unloadability
+     * - Need true isolation
+     * - Simulating real plugin loading scenario
+     * 
+     * Use APPROACH 3 (direct reference) when:
+     * - Testing business logic only
+     * - Unloadability not a concern
+     * - Faster test execution needed
+     * 
+     * Use APPROACH 2 only for specific cases where you need type references
+     * but not full isolation.
+     */
+}
+
 
