@@ -27,6 +27,30 @@ public sealed class MethodSelector
         args));
 
     /// <summary>
+    /// Build arguments using a callback DSL that creates objects directly in the target ALC.
+    /// No serialization needed - objects are constructed via reflection in the correct context.
+    /// 
+    /// Usage:
+    /// <code>
+    /// .WithArgs(args => args
+    ///     .New&lt;MyDto&gt;(b => b.Set("Id", 42).Set("Name", "Test"))
+    ///     .New&lt;Options&gt;(b => b.Set("Format", Format.N))
+    ///     .Value(CancellationToken.None))
+    /// </code>
+    /// </summary>
+    public ExecutionBuilder WithArgs(Action<AlcArgumentList> configure)
+    {
+        var argList = new AlcArgumentList();
+        configure(argList);
+        return new ExecutionBuilder(new InvocationSpec(
+            _assemblyPath,
+            _typeName,
+            _methodName,
+            useSerializationIfNeeded: false,
+            alcArguments: argList));
+    }
+
+    /// <summary>
     /// Execute using using default parameters
     /// </summary>
     /// <remarks>Will create default(T) arguments, usually null ones</remarks>

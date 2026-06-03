@@ -52,15 +52,26 @@ public class RuntimeTypePreservingConverterFactory : JsonConverterFactory
                    ((elementType.IsClass || elementType == typeof(object)) && elementType != typeof(string));
         }
 
+        // Handle plain object properties to preserve primitive types
+        if (typeToConvert == typeof(object))
+        {
+            return true;
+        }
+
         return false;
     }
 
     public override JsonConverter? CreateConverter(Type typeToConvert, JsonSerializerOptions options)
     {
+        if (typeToConvert == typeof(object))
+        {
+            return new PolymorphicObjectConverter();
+        }
+
         if (typeToConvert.IsArray)
         {
             var elementType = typeToConvert.GetElementType()!;
-            var converterType = typeof(PolymorphicCollectionConverter<>).MakeGenericType(elementType);
+            var converterType = typeof(PolymorphicArrayConverter<>).MakeGenericType(elementType);
             return (JsonConverter?)Activator.CreateInstance(converterType);
         }
         
@@ -90,6 +101,90 @@ public class RuntimeTypePreservingConverterFactory : JsonConverterFactory
         }
 
         return null;
+    }
+}
+
+/// <summary>
+/// Converter for object-typed properties that preserves .NET primitive types
+/// and handles $type/$value wrappers for complex types.
+/// </summary>
+public class PolymorphicObjectConverter : JsonConverter<object>
+{
+    public override object? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        switch (reader.TokenType)
+        {
+            case JsonTokenType.Null:
+                return null;
+            case JsonTokenType.True:
+                return true;
+            case JsonTokenType.False:
+                return false;
+            case JsonTokenType.String:
+                return reader.GetString();
+            case JsonTokenType.Number:
+                if (reader.TryGetInt32(out var intVal)) return intVal;
+                if (reader.TryGetInt64(out var longVal)) return longVal;
+                if (reader.TryGetDouble(out var doubleVal)) return doubleVal;
+                return reader.GetDecimal();
+            case JsonTokenType.StartObject:
+                using (var doc = JsonDocument.ParseValue(ref reader))
+                {
+                    var root = doc.RootElement;
+                    if (root.TryGetProperty("$type", out var typeProp))
+                    {
+                        var typeName = typeProp.GetString();
+                        if (!string.IsNullOrEmpty(typeName))
+                        {
+                            var actualType = Type.GetType(typeName);
+                            if (actualType != null && root.TryGetProperty("$value", out var valueElement))
+                            {
+                                return JsonSerializer.Deserialize(valueElement.GetRawText(), actualType, options);
+                            }
+                        }
+                    }
+                    // Return as a dictionary fallback
+                    return JsonSerializer.Deserialize<Dictionary<string, object>>(root.GetRawText(), options);
+                }
+            case JsonTokenType.StartArray:
+                using (var doc2 = JsonDocument.ParseValue(ref reader))
+                {
+                    return JsonSerializer.Deserialize<List<object>>(doc2.RootElement.GetRawText(), options);
+                }
+            default:
+                throw new JsonException($"Unsupported token type: {reader.TokenType}");
+        }
+    }
+
+    public override void Write(Utf8JsonWriter writer, object value, JsonSerializerOptions options)
+    {
+        if (value == null)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+
+        var actualType = value.GetType();
+
+        // Primitives and strings can be written directly
+        if (actualType == typeof(object))
+        {
+            writer.WriteStartObject();
+            writer.WriteEndObject();
+        }
+        else if (actualType.IsPrimitive || actualType == typeof(string) || actualType == typeof(decimal))
+        {
+            JsonSerializer.Serialize(writer, value, actualType, options);
+        }
+        else
+        {
+            // Wrap complex types with type information
+            writer.WriteStartObject();
+            writer.WriteString("$type", actualType.AssemblyQualifiedName);
+            writer.WritePropertyName("$value");
+            JsonSerializer.Serialize(writer, value, actualType, options);
+            writer.WriteEndObject();
+        }
     }
 }
 
@@ -206,6 +301,133 @@ public class PolymorphicCollectionConverter<T> : JsonConverter<List<T>> where T 
             }
 
             // Try without assembly version
+            var parts = typeName.Split(',');
+            if (parts.Length > 1)
+            {
+                var simpleTypeName = $"{parts[0]}, {parts[1]}";
+                type = Type.GetType(simpleTypeName);
+                if (type != null)
+                {
+                    return type;
+                }
+            }
+
+            return Type.GetType(parts[0].Trim());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+}
+
+/// <summary>
+/// Converter for arrays that preserves runtime type information for each element.
+/// </summary>
+public class PolymorphicArrayConverter<T> : JsonConverter<T[]> where T : class
+{
+    public override T[]? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Null)
+        {
+            return null;
+        }
+
+        if (reader.TokenType != JsonTokenType.StartArray)
+        {
+            throw new JsonException("Expected start of array");
+        }
+
+        var list = new List<T>();
+
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndArray)
+            {
+                return list.ToArray();
+            }
+
+            if (reader.TokenType == JsonTokenType.StartObject)
+            {
+                using var doc = JsonDocument.ParseValue(ref reader);
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("$type", out var typeProperty))
+                {
+                    var typeName = typeProperty.GetString();
+                    if (!string.IsNullOrEmpty(typeName))
+                    {
+                        var actualType = ResolveType(typeName);
+                        if (actualType != null && root.TryGetProperty("$value", out var valueElement))
+                        {
+                            var item = (T?)JsonSerializer.Deserialize(valueElement.GetRawText(), actualType, options);
+                            if (item != null)
+                            {
+                                list.Add(item);
+                            }
+                            continue;
+                        }
+                    }
+                }
+
+                var defaultItem = JsonSerializer.Deserialize<T>(root.GetRawText(), options);
+                if (defaultItem != null)
+                {
+                    list.Add(defaultItem);
+                }
+            }
+        }
+
+        throw new JsonException("Unexpected end of JSON");
+    }
+
+    public override void Write(Utf8JsonWriter writer, T[] value, JsonSerializerOptions options)
+    {
+        if (value == null)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+
+        writer.WriteStartArray();
+
+        foreach (var item in value)
+        {
+            if (item == null)
+            {
+                writer.WriteNullValue();
+                continue;
+            }
+
+            var actualType = item.GetType();
+
+            if (actualType != typeof(T))
+            {
+                writer.WriteStartObject();
+                writer.WriteString("$type", actualType.AssemblyQualifiedName);
+                writer.WritePropertyName("$value");
+                JsonSerializer.Serialize(writer, item, actualType, options);
+                writer.WriteEndObject();
+            }
+            else
+            {
+                JsonSerializer.Serialize(writer, item, actualType, options);
+            }
+        }
+
+        writer.WriteEndArray();
+    }
+
+    private Type? ResolveType(string typeName)
+    {
+        try
+        {
+            var type = Type.GetType(typeName);
+            if (type != null)
+            {
+                return type;
+            }
+
             var parts = typeName.Split(',');
             if (parts.Length > 1)
             {

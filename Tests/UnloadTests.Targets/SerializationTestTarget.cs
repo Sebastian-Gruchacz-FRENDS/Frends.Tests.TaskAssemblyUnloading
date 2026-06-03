@@ -94,6 +94,20 @@ namespace UnloadTests.Targets
         public string? Description { get; set; }
     }
 
+    // SQL-like parameter with object Value (mimicking Frends.MicrosoftSQL.ExecuteQueryToFile.Definitions.SqlParameter)
+    public class SqlParameter
+    {
+        public string? Name { get; set; }
+        public object? Value { get; set; }
+    }
+
+    // Container with an array of class-type objects
+    public class QueryInput
+    {
+        public string? Query { get; set; }
+        public SqlParameter[]? Parameters { get; set; }
+    }
+
     // Task methods to test
     public static class SerializationTestTarget
     {
@@ -251,6 +265,43 @@ namespace UnloadTests.Targets
 
             var typeCount = input.Select(a => a.GetType()).Distinct().Count();
             return typeCount;
+        }
+
+        // Array serialization tests
+        public static bool ValidateArrayOfParameters(QueryInput input)
+        {
+            if (input == null || input.Parameters == null || input.Parameters.Length == 0)
+                return false;
+
+            if (string.IsNullOrEmpty(input.Query))
+                return false;
+
+            // Verify each parameter has a name and a correctly-typed value
+            foreach (var p in input.Parameters)
+            {
+                if (string.IsNullOrEmpty(p.Name))
+                    return false;
+                if (p.Value == null)
+                    return false;
+
+                // Ensure values are actual .NET types, not JsonElement
+                var valueType = p.Value.GetType();
+                if (valueType.FullName == "System.Text.Json.JsonElement")
+                    return false;
+            }
+
+            return true;
+        }
+
+        public static bool ValidateObjectPropertyTypes(QueryInput input)
+        {
+            if (input?.Parameters == null || input.Parameters.Length < 3)
+                return false;
+
+            // Expect: int, string, double in that order
+            return input.Parameters[0].Value is int
+                && input.Parameters[1].Value is string
+                && input.Parameters[2].Value is double;
         }
     }
 }

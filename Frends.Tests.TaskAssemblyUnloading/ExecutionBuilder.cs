@@ -80,34 +80,68 @@ public sealed class ExecutionBuilder
 
         var type = asm.GetType(spec.TypeName, throwOnError: true)!;
 
-        var method = ResolveMethod(type, spec.MethodName, spec.Arguments, spec.UseSerializationIfNeeded, out var shouldSerialize);
-        var args = spec.Arguments;
-
-        if (!args.Any())
+        // If using builder-based arguments, materialize them directly in the ALC
+        if (spec.AlcArguments != null)
         {
-            args = TryBuildDefaultArguments(method);
+            var method = ResolveMethodByParamCount(type, spec.MethodName, spec.AlcArguments.Count);
+            var args = spec.AlcArguments.Materialize(alc);
+
+            UnloadDiagnostics.Log($"Invoking (builder args): {type.FullName}.{method.Name}");
+            var result = method.Invoke(null, args);
+
+            if (result is Task task)
+            {
+                task.GetAwaiter().GetResult();
+            }
+
+            executed = true;
+            UnloadDiagnostics.Log("Unloading ALC");
+            alc.Unload();
+            return;
+        }
+
+        var resolvedMethod = ResolveMethod(type, spec.MethodName, spec.Arguments, spec.UseSerializationIfNeeded, out var shouldSerialize);
+        var resolvedArgs = spec.Arguments;
+
+        if (!resolvedArgs.Any())
+        {
+            resolvedArgs = TryBuildDefaultArguments(resolvedMethod);
         }
         else
         {
             if (shouldSerialize)
             {
-                args = SerializeArgumentsThroughAlcBoundary(alc, args, method);
+                resolvedArgs = SerializeArgumentsThroughAlcBoundary(alc, resolvedArgs, resolvedMethod);
             }
         }
 
         // TODO: test with async / sync combinations, both for test method and Task method
-        UnloadDiagnostics.Log($"Invoking: {type.FullName}.{method.Name}");
-        var result = method.Invoke(null, args);
+        UnloadDiagnostics.Log($"Invoking: {type.FullName}.{resolvedMethod.Name}");
+        var invokeResult = resolvedMethod.Invoke(null, resolvedArgs);
 
-        if (result is Task task)
+        if (invokeResult is Task t)
         {
-            task.GetAwaiter().GetResult();
+            t.GetAwaiter().GetResult();
         }
 
         executed = true;
 
         UnloadDiagnostics.Log("Unloading ALC");
         alc.Unload();
+    }
+
+    private static MethodInfo ResolveMethodByParamCount(Type type, string methodName, int paramCount)
+    {
+        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(m => m.Name == methodName && m.GetParameters().Length == paramCount)
+            .ToArray();
+
+        if (methods.Length == 0)
+            throw new MissingMethodException(type.FullName, methodName);
+        if (methods.Length > 1)
+            throw new AmbiguousMatchException($"Multiple overloads of '{methodName}' with {paramCount} parameters found.");
+
+        return methods[0];
     }
 
     private static object?[] SerializeArgumentsThroughAlcBoundary(AssemblyLoadContext alcContext, object?[] args, MethodInfo method)

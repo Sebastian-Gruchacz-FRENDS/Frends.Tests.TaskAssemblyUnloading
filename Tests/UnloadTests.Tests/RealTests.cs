@@ -446,5 +446,47 @@ namespace UnloadTests.Tests
 
             Assert.Pass("Task threw exception but still unloaded successfully");
         }
+
+        [Test]
+        public void SerializeArrayOfClassObjects_ShouldWorkAcrossAlcBoundary()
+        {
+            var input = new QueryInput
+            {
+                Query = "SELECT * FROM Users WHERE Id = @Id AND Name = @Name",
+                Parameters = new SqlParameter[]
+                {
+                    new SqlParameter { Name = "@Id", Value = 42 },
+                    new SqlParameter { Name = "@Name", Value = "John" },
+                    new SqlParameter { Name = "@Score", Value = 3.14 }
+                }
+            };
+
+            Assert.DoesNotThrow(() =>
+                UnloadTest
+                    .Invoke(TestAssets.Path, "UnloadTests.Targets.SerializationTestTarget", "ValidateArrayOfParameters", input)
+                    .Execute()
+            );
+        }
+
+        [Test]
+        public void SerializeObjectProperties_ShouldPreservePrimitiveTypes()
+        {
+            var input = new QueryInput
+            {
+                Query = "test",
+                Parameters = new SqlParameter[]
+                {
+                    new SqlParameter { Name = "@Int", Value = 100 },
+                    new SqlParameter { Name = "@String", Value = "hello" },
+                    new SqlParameter { Name = "@Double", Value = 2.718 }
+                }
+            };
+
+            Assert.DoesNotThrow(() =>
+                UnloadTest
+                    .Invoke(TestAssets.Path, "UnloadTests.Targets.SerializationTestTarget", "ValidateObjectPropertyTypes", input)
+                    .Execute()
+            );
+        }
     }
 }
