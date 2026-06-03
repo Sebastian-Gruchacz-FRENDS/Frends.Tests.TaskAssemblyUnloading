@@ -43,6 +43,15 @@ namespace Frends.Test.TaskInjection
             {
                 _options.TypeInfoResolver = new AlcTypeResolver(alc);
             }
+#else
+            if (alc != null)
+            {
+                // .NET 6 does not support IJsonTypeInfoResolver; deeply nested polymorphic
+                // types across ALC boundaries may not deserialize correctly.
+                throw new PlatformNotSupportedException(
+                    "Cross-ALC deserialization with nested complex types requires .NET 7.0 or later. " +
+                    "On .NET 6.0, only simple (non-nested) types are supported across ALC boundaries.");
+            }
 #endif
         }
 
