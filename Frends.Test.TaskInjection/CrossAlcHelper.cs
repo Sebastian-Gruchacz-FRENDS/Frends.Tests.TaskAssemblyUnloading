@@ -38,10 +38,12 @@ namespace Frends.Test.TaskInjection
         {
             _alc = alc;
             _options.Converters.Add(converter);
+#if NET7_0_OR_GREATER
             if (alc != null)
             {
                 _options.TypeInfoResolver = new AlcTypeResolver(alc);
             }
+#endif
         }
 
         public object? DeserializeObject(string json, Type targetType)
@@ -65,6 +67,7 @@ namespace Frends.Test.TaskInjection
         }
     }
 
+    #if NET7_0_OR_GREATER
     public class AlcTypeResolver : IJsonTypeInfoResolver
     {
         private readonly AssemblyLoadContext _alc;
@@ -87,6 +90,7 @@ namespace Frends.Test.TaskInjection
             return JsonTypeInfo.CreateJsonTypeInfo(type, options);
         }
     }
+#endif
 
     public static class CrossAlcHelper
     {
