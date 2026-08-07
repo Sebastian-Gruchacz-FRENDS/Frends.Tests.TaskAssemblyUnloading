@@ -61,6 +61,18 @@ public class AlcArgumentList
     }
 
     /// <summary>
+    /// Create a TItem[] array argument with items constructed in the target ALC.
+    /// </summary>
+    public AlcArgumentList NewArray<TItem>(Action<CollectionBuilder<TItem>> configure)
+    {
+        var builder = new CollectionBuilder<TItem>();
+        configure(builder);
+        builder.AsArray();
+        _factories.Add(builder);
+        return this;
+    }
+
+    /// <summary>
     /// Pass a primitive/framework value directly (no ALC boundary issue for these).
     /// </summary>
     public AlcArgumentList Value(object? value)
@@ -144,6 +156,21 @@ public class ObjectBuilder<T> : IArgumentFactory
         return this;
     }
 
+    /// <summary>
+    /// Set an array property (TItem[]) with items built in the ALC.
+    /// Materializes each item inside the target ALC, then emits a TItem[] so it can be
+    /// assigned to array-typed properties (e.g. SqlParameter[]).
+    /// </summary>
+    public ObjectBuilder<T> SetArray<TItem>(Expression<Func<T, TItem[]?>> property, Action<CollectionBuilder<TItem>> configure)
+    {
+        var name = GetMemberName(property);
+        var collectionBuilder = new CollectionBuilder<TItem>();
+        configure(collectionBuilder);
+        collectionBuilder.AsArray();
+        _nestedProperties.Add((name, collectionBuilder));
+        return this;
+    }
+
     public object? Create(AssemblyLoadContext alc)
     {
         var alcType = AlcTypeResolver.ResolveTypeInAlc(alc, _sourceType);
@@ -212,6 +239,17 @@ public class CollectionBuilder<TItem> : IArgumentFactory
 {
     private readonly Type _itemType = typeof(TItem);
     private readonly List<IArgumentFactory> _items = new();
+    private bool _emitAsArray;
+
+    /// <summary>
+    /// Emit the materialized collection as a TItem[] array instead of a List&lt;TItem&gt;.
+    /// Use this when the target property/parameter is an array type.
+    /// </summary>
+    internal CollectionBuilder<TItem> AsArray()
+    {
+        _emitAsArray = true;
+        return this;
+    }
 
     /// <summary>
     /// Add an item of the base type, configured with a type-safe builder.
@@ -247,6 +285,18 @@ public class CollectionBuilder<TItem> : IArgumentFactory
     public object? Create(AssemblyLoadContext alc)
     {
         var alcItemType = AlcTypeResolver.ResolveTypeInAlc(alc, _itemType);
+
+        if (_emitAsArray)
+        {
+            var array = Array.CreateInstance(alcItemType, _items.Count);
+            for (int i = 0; i < _items.Count; i++)
+            {
+                array.SetValue(_items[i].Create(alc), i);
+            }
+
+            return array;
+        }
+
         var listType = typeof(List<>).MakeGenericType(alcItemType);
         var list = Activator.CreateInstance(listType)!;
         var addMethod = listType.GetMethod("Add")!;
